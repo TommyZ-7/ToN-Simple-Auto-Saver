@@ -43,15 +43,96 @@ type AppSnapshot = {
   survivals: number;
 };
 
+// デモ用ダミーデータ（宣伝画像用）
+const DEMO_MODE = true;
+
+const DEMO_SNAPSHOT: AppSnapshot = {
+  settings: { log_dir: "C:\\Users\\Player\\AppData\\LocalLow\\VRChat\\VRChat" },
+  history: [
+    {
+      code: "ABCD-1234-EFGH-5678",
+      timestamp: "2026/01/21 14:32:15",
+      round_type: "クラシック",
+    },
+    {
+      code: "IJKL-9012-MNOP-3456",
+      timestamp: "2026/01/21 14:28:42",
+      round_type: "ブラッドムーン",
+    },
+    {
+      code: "QRST-7890-UVWX-1234",
+      timestamp: "2026/01/21 14:25:18",
+      round_type: "ミッドナイト",
+    },
+    {
+      code: "YZAB-5678-CDEF-9012",
+      timestamp: "2026/01/21 14:21:55",
+      round_type: "霧",
+    },
+    {
+      code: "GHIJ-3456-KLMN-7890",
+      timestamp: "2026/01/21 14:18:33",
+      round_type: "オルタネイト",
+    },
+    {
+      code: "OPQR-1234-STUV-5678",
+      timestamp: "2026/01/21 14:15:08",
+      round_type: "パニッシュ",
+    },
+    {
+      code: "WXYZ-9012-ABCD-3456",
+      timestamp: "2026/01/21 14:11:45",
+      round_type: "クラシック",
+    },
+    {
+      code: "EFGH-7890-IJKL-1234",
+      timestamp: "2026/01/21 14:08:22",
+      round_type: "サボタージュ",
+    },
+  ],
+  latest_code: {
+    code: "ABCD-1234-EFGH-5678",
+    timestamp: "2026/01/21 14:32:15",
+    round_type: "クラシック",
+  },
+  stats: {
+    total_rounds: 247,
+    deaths: 89,
+    round_types: {
+      クラシック: { survivals: 45, deaths: 18 },
+      オルタネイト: { survivals: 22, deaths: 12 },
+      霧: { survivals: 18, deaths: 8 },
+      パニッシュ: { survivals: 12, deaths: 7 },
+      サボタージュ: { survivals: 8, deaths: 5 },
+      狂気: { survivals: 6, deaths: 4 },
+      ブラッドバス: { survivals: 4, deaths: 6 },
+      ミッドナイト: { survivals: 15, deaths: 9 },
+      ミスティックムーン: { survivals: 5, deaths: 3 },
+      ブラッドムーン: { survivals: 7, deaths: 5 },
+      トワイライト: { survivals: 3, deaths: 2 },
+      ソルティス: { survivals: 4, deaths: 3 },
+      RUN: { survivals: 2, deaths: 4 },
+      "8ページ": { survivals: 3, deaths: 2 },
+      アンバウンド: { survivals: 2, deaths: 1 },
+      ゴースト: { survivals: 2, deaths: 0 },
+    },
+  },
+  survivals: 158,
+};
+
 function App() {
   const [currentPage, setCurrentPage] = useState("home");
-  const [snapshot, setSnapshot] = useState<AppSnapshot>({
-    settings: {},
-    history: [],
-    latest_code: null,
-    stats: { total_rounds: 0, deaths: 0, round_types: {} },
-    survivals: 0,
-  });
+  const [snapshot, setSnapshot] = useState<AppSnapshot>(
+    DEMO_MODE
+      ? DEMO_SNAPSHOT
+      : {
+          settings: {},
+          history: [],
+          latest_code: null,
+          stats: { total_rounds: 0, deaths: 0, round_types: {} },
+          survivals: 0,
+        },
+  );
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
 
   // アップデート機能
@@ -70,10 +151,16 @@ function App() {
     let unlistenSettings: (() => void) | undefined;
 
     const init = async () => {
-      await refreshState();
+      // デモモード時はバックエンドからの状態取得をスキップ
+      if (!DEMO_MODE) {
+        await refreshState();
+      }
       setAutoStartEnabled(await isEnabled());
       unlistenState = await listen("state_updated", (event) => {
-        setSnapshot(event.payload as AppSnapshot);
+        // デモモード時はバックエンドからの更新を無視
+        if (!DEMO_MODE) {
+          setSnapshot(event.payload as AppSnapshot);
+        }
       });
       unlistenSettings = await listen("open_settings", () => {
         setCurrentPage("home");
