@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGRkVEOEFDMUM1NUEzOTcKUldTWG8xVWNyTmorZjlXSmsvTnRxVEplUEcwSXc0KzNweEhIb1BVeERUUjhrRzZ2dVBxcU9BREGIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMUY5MUMwQTVBRTZERUQKUldUdGJhNmx3SkVmYTg3NFRoR3R1enpQcFdvT01wQitFUHBqdW9ZQkdwdXJuUnBEbjZKLzJpZTEK",
       "endpoints": [
         "https://github.com/TommyZ-7/ToN-Simple-Auto-Saver/releases/latest/download/latest.json"
       ],
