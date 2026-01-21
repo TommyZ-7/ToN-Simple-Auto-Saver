@@ -30,6 +30,7 @@ interface SettingsPageProps {
   updateInfo: UpdateInfo | null;
   updateProgress: UpdateProgress | null;
   updateError: string | null;
+  currentVersion: string;
   onCheckForUpdates: () => void;
   onDownloadAndInstall: () => void;
 }
@@ -44,6 +45,7 @@ export function SettingsPage({
   updateInfo,
   updateProgress,
   updateError,
+  currentVersion,
   onCheckForUpdates,
   onDownloadAndInstall,
 }: SettingsPageProps) {
@@ -113,6 +115,7 @@ export function SettingsPage({
           updateInfo={updateInfo}
           progress={updateProgress}
           error={updateError}
+          currentVersion={currentVersion}
           onCheckForUpdates={onCheckForUpdates}
           onDownloadAndInstall={onDownloadAndInstall}
         />
@@ -152,6 +155,7 @@ interface UpdateSectionProps {
   updateInfo: UpdateInfo | null;
   progress: UpdateProgress | null;
   error: string | null;
+  currentVersion: string;
   onCheckForUpdates: () => void;
   onDownloadAndInstall: () => void;
 }
@@ -161,6 +165,7 @@ function UpdateSection({
   updateInfo,
   progress,
   error,
+  currentVersion,
   onCheckForUpdates,
   onDownloadAndInstall,
 }: UpdateSectionProps) {
@@ -185,6 +190,7 @@ function UpdateSection({
               <UpdateStatusDescription
                 status={status}
                 updateInfo={updateInfo}
+                currentVersion={currentVersion}
                 error={error}
               />
             </p>
@@ -286,27 +292,30 @@ function UpdateStatusTitle({
 function UpdateStatusDescription({
   status,
   updateInfo,
+  currentVersion,
   error,
 }: {
   status: UpdateStatus;
   updateInfo: UpdateInfo | null;
+  currentVersion: string;
   error: string | null;
 }) {
+  const version = updateInfo?.currentVersion || currentVersion || "不明";
   switch (status) {
     case "checking":
       return "サーバーに問い合わせています...";
     case "available":
-      return `現在のバージョン: v${updateInfo?.currentVersion}`;
+      return `現在のバージョン: v${version}`;
     case "downloading":
       return "更新ファイルをダウンロードしています";
     case "installing":
       return "アプリケーションは自動的に再起動します";
     case "up-to-date":
-      return `現在のバージョン: v${updateInfo?.currentVersion || "不明"}`;
+      return `現在のバージョン: v${version}`;
     case "error":
       return error || "不明なエラー";
     default:
-      return "新しいバージョンがあるか確認できます";
+      return `現在のバージョン: v${version}`;
   }
 }
 

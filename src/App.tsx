@@ -60,6 +60,7 @@ function App() {
     updateInfo,
     progress: updateProgress,
     error: updateError,
+    currentVersion,
     checkForUpdates,
     downloadAndInstall,
     dismissUpdate,
@@ -148,6 +149,7 @@ function App() {
             updateInfo={updateInfo}
             updateProgress={updateProgress}
             updateError={updateError}
+            currentVersion={currentVersion}
             onCheckForUpdates={checkForUpdates}
             onDownloadAndInstall={downloadAndInstall}
           />

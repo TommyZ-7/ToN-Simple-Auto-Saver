@@ -30,41 +30,59 @@ export function useUpdater() {
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [updateInstance, setUpdateInstance] = useState<Update | null>(null);
+  const [currentVersion, setCurrentVersion] = useState<string>("");
 
-  const checkForUpdates = useCallback(async (silent = false) => {
-    try {
-      setStatus("checking");
-      setError(null);
-
-      const update = await check();
-      const currentVersion = await getVersion();
-
-      if (update) {
-        setUpdateInfo({
-          version: update.version,
-          currentVersion,
-          body: update.body || undefined,
-          date: update.date || undefined,
-        });
-        setUpdateInstance(update);
-        setStatus("available");
-        return true;
-      } else {
-        setStatus("up-to-date");
-        return false;
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      // 開発モードや設定エラーの場合は静かに失敗
-      if (silent || errorMessage.includes("Could not fetch a valid release")) {
-        setStatus("idle");
-        return false;
-      }
-      setError(errorMessage);
-      setStatus("error");
-      return false;
-    }
+  // 起動時に現在のバージョンを取得
+  useEffect(() => {
+    getVersion()
+      .then(setCurrentVersion)
+      .catch(() => setCurrentVersion("不明"));
   }, []);
+
+  const checkForUpdates = useCallback(
+    async (silent = false) => {
+      try {
+        setStatus("checking");
+        setError(null);
+
+        const update = await check();
+        const version = currentVersion || (await getVersion());
+
+        if (update) {
+          setUpdateInfo({
+            version: update.version,
+            currentVersion: version,
+            body: update.body || undefined,
+            date: update.date || undefined,
+          });
+          setUpdateInstance(update);
+          setStatus("available");
+          return true;
+        } else {
+          setUpdateInfo({
+            version: "",
+            currentVersion: version,
+          });
+          setStatus("up-to-date");
+          return false;
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        // 開発モードや設定エラーの場合は静かに失敗
+        if (
+          silent ||
+          errorMessage.includes("Could not fetch a valid release")
+        ) {
+          setStatus("idle");
+          return false;
+        }
+        setError(errorMessage);
+        setStatus("error");
+        return false;
+      }
+    },
+    [currentVersion],
+  );
 
   const downloadAndInstall = useCallback(async () => {
     if (!updateInstance) {
@@ -135,6 +153,7 @@ export function useUpdater() {
     updateInfo,
     progress,
     error,
+    currentVersion,
     checkForUpdates,
     downloadAndInstall,
     dismissUpdate,
