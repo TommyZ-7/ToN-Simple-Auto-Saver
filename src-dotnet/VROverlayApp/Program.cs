@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -71,6 +72,9 @@ namespace VROverlayApp
         static void Main(string[] args)
         {
             Console.WriteLine("[VROverlay] Starting...");
+
+            Console.InputEncoding = Encoding.UTF8;
+            Console.OutputEncoding = Encoding.UTF8;
 
             // Parse command line arguments
             for (int i = 0; i < args.Length; i++)
@@ -154,9 +158,23 @@ namespace VROverlayApp
             {
                 if (string.IsNullOrWhiteSpace(line)) return;
 
-                Console.WriteLine($"[VROverlay] Received command: {line}");
+                var trimmed = line.Trim();
+                if (trimmed.Length > 0 && trimmed[0] == '\uFEFF')
+                {
+                    trimmed = trimmed.TrimStart('\uFEFF');
+                }
 
-                var command = JsonSerializer.Deserialize<VrCommand>(line);
+                string json = trimmed;
+                if (trimmed.StartsWith("b64:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var payload = trimmed.Substring(4);
+                    var bytes = Convert.FromBase64String(payload);
+                    json = Encoding.UTF8.GetString(bytes);
+                }
+
+                Console.WriteLine($"[VROverlay] Received command: {json}");
+
+                var command = JsonSerializer.Deserialize<VrCommand>(json);
                 if (command == null)
                 {
                     Console.WriteLine("[VROverlay] Command is null after deserialize");

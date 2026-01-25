@@ -1,19 +1,21 @@
 mod terror_data;
 
 use arboard::Clipboard;
+use base64::Engine;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::path::BaseDirectory;
 use tauri_plugin_autostart::MacosLauncher;
 
 use terror_data::{get_terror_data, TerrorData};
@@ -404,19 +406,39 @@ fn get_vr_overlay_path(app_handle: &AppHandle) -> Option<PathBuf> {
         }
     }
     
-    // 開発時のパス（resource_dir/binaries）
+    // バンドル/開発共通: resource_dir 直下と resource_dir/binaries を確認
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        let binary_name = if cfg!(target_os = "windows") {
-            "vr-overlay-x86_64-pc-windows-msvc.exe"
+        let candidates = if cfg!(target_os = "windows") {
+            vec![
+                resource_dir.join("vr-overlay.exe"),
+                resource_dir.join("binaries").join("vr-overlay.exe"),
+                resource_dir
+                    .join("binaries")
+                    .join("vr-overlay-x86_64-pc-windows-msvc.exe"),
+            ]
         } else {
-            "vr-overlay"
+            vec![
+                resource_dir.join("vr-overlay"),
+                resource_dir.join("binaries").join("vr-overlay"),
+            ]
         };
-        let dev_path = resource_dir.join("binaries").join(binary_name);
-        if dev_path.exists() {
-            println!("[tsst] Found VR overlay at: {:?}", dev_path);
-            return Some(dev_path);
+
+        for candidate in candidates {
+            if candidate.exists() {
+                println!("[tsst] Found VR overlay at: {:?}", candidate);
+                return Some(candidate);
+            } else {
+                println!("[tsst] VR overlay not found at: {:?}", candidate);
+            }
         }
-        println!("[tsst] VR overlay not found at: {:?}", dev_path);
+    }
+
+    // 念のため: BaseDirectory::Resource で解決
+    if let Ok(resolved) = app_handle.path().resolve("vr-overlay.exe", BaseDirectory::Resource) {
+        if resolved.exists() {
+            println!("[tsst] Found VR overlay at: {:?}", resolved);
+            return Some(resolved);
+        }
     }
     
     println!("[tsst] VR overlay binary not found");
@@ -460,11 +482,47 @@ fn start_vr_overlay(
         .map_err(|e| format!("Failed to start VR overlay: {}", e))?;
     
     let stdin = child.stdin.take();
+    if let Some(stdout) = child.stdout.take() {
+        spawn_overlay_log_reader(app_handle.clone(), stdout, "stdout");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_overlay_log_reader(app_handle.clone(), stderr, "stderr");
+    }
     state.process = Some(child);
     state.stdin_writer = stdin;
     
     println!("[tsst] VR overlay started");
     Ok(())
+}
+
+fn spawn_overlay_log_reader(app_handle: AppHandle, stream: impl Read + Send + 'static, label: &'static str) {
+    std::thread::spawn(move || {
+        let log_dir = app_handle
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|dir| dir.join("logs"));
+
+        if let Some(ref dir) = log_dir {
+            let _ = fs::create_dir_all(dir);
+        }
+
+        let log_path = log_dir
+            .map(|dir| dir.join("vr-overlay.log"))
+            .unwrap_or_else(|| PathBuf::from("vr-overlay.log"));
+
+        let mut file = match fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let _ = writeln!(file, "[tsst] log start ({})", label);
+        let reader = BufReader::new(stream);
+        for line in reader.lines().flatten() {
+            let _ = writeln!(file, "[{}] {}", label, line);
+        }
+        let _ = writeln!(file, "[tsst] log end ({})", label);
+    });
 }
 
 fn stop_vr_overlay(vr_state: &Mutex<VrOverlayState>) -> Result<(), String> {
@@ -492,13 +550,15 @@ fn send_vr_command(vr_state: &Mutex<VrOverlayState>, command: &VrCommand) -> Res
     let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
     
     if let Some(ref mut stdin) = state.stdin_writer {
-        let cmd = serde_json::to_string(command)
+        let cmd_bytes = serde_json::to_vec(command)
             .map_err(|e| format!("Failed to serialize VR command: {}", e))?;
-        writeln!(stdin, "{}", cmd)
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&cmd_bytes);
+        let line = format!("b64:{}", encoded);
+        writeln!(stdin, "{}", line)
             .map_err(|e| format!("Failed to write VR command: {}", e))?;
         stdin.flush()
             .map_err(|e| format!("Failed to flush VR command: {}", e))?;
-        println!("[tsst] Sent VR command: {}", cmd);
+        println!("[tsst] Sent VR command (b64, {} bytes)", cmd_bytes.len());
     }
     
     Ok(())
