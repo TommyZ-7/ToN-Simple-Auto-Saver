@@ -390,21 +390,37 @@ enum VrCommand {
 }
 
 fn get_vr_overlay_path(app_handle: &AppHandle) -> Option<PathBuf> {
-    // Sidecarバイナリのパスを取得
-    let resource_dir = app_handle.path().resource_dir().ok()?;
-    let binary_name = if cfg!(target_os = "windows") {
-        "vr-overlay-x86_64-pc-windows-msvc.exe"
-    } else {
-        "vr-overlay"
-    };
-    let binary_path = resource_dir.join("binaries").join(binary_name);
+    // ビルド時: アプリと同じディレクトリにvr-overlay.exeとして配置される
+    // 開発時: target/debug/vr-overlay.exe または binaries/vr-overlay-xxx.exe
     
-    if binary_path.exists() {
-        Some(binary_path)
-    } else {
-        println!("[tsst] VR overlay binary not found at: {:?}", binary_path);
-        None
+    // まずアプリの実行ファイルと同じディレクトリを確認
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let prod_path = exe_dir.join("vr-overlay.exe");
+            if prod_path.exists() {
+                println!("[tsst] Found VR overlay at: {:?}", prod_path);
+                return Some(prod_path);
+            }
+        }
     }
+    
+    // 開発時のパス（resource_dir/binaries）
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let binary_name = if cfg!(target_os = "windows") {
+            "vr-overlay-x86_64-pc-windows-msvc.exe"
+        } else {
+            "vr-overlay"
+        };
+        let dev_path = resource_dir.join("binaries").join(binary_name);
+        if dev_path.exists() {
+            println!("[tsst] Found VR overlay at: {:?}", dev_path);
+            return Some(dev_path);
+        }
+        println!("[tsst] VR overlay not found at: {:?}", dev_path);
+    }
+    
+    println!("[tsst] VR overlay binary not found");
+    None
 }
 
 fn start_vr_overlay(
@@ -430,7 +446,11 @@ fn start_vr_overlay(
     
     println!("[tsst] Starting VR overlay: {:?} --position {}", binary_path, position_arg);
     
+    // sidecarと同じディレクトリをカレントディレクトリに設定（DLLを見つけるため）
+    let working_dir = binary_path.parent().unwrap_or(Path::new("."));
+    
     let mut child = Command::new(&binary_path)
+        .current_dir(working_dir)
         .arg("--position")
         .arg(position_arg)
         .stdin(Stdio::piped())

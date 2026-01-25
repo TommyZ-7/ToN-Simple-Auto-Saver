@@ -38,7 +38,9 @@
     ],
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/vr-overlay"],
-    "resources": ["binaries/openvr_api.dll"]
+    "resources": {
+      "binaries/openvr_api.dll": "./"
+    }
   },
   "plugins": {
     "updater": {
