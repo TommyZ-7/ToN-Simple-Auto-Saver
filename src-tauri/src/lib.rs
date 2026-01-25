@@ -1,3 +1,5 @@
+mod terror_data;
+
 use arboard::Clipboard;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -5,13 +7,16 @@ use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
+
+use terror_data::{get_terror_data, TerrorData};
 
 const WORLD_ID: &str = "wrld_a61cdabe-1218-4287-9ffc-2a4d1414e5bd";
 const MAX_HISTORY: usize = 10;
@@ -38,10 +43,21 @@ fn get_effective_log_dir(settings: &AppSettings) -> Option<PathBuf> {
         .or_else(get_default_log_dir)
 }
 
+/// VRオーバーレイの位置
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum VrOverlayPosition {
+    #[default]
+    RightHand,
+    LeftHand,
+    Above,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppSettings {
     log_dir: Option<String>,
     auto_switch_tab: bool,
+    vr_overlay_enabled: bool,
+    vr_overlay_position: VrOverlayPosition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +101,33 @@ struct CurrentRoundInfo {
     save_code: Option<String>,
 }
 
+/// テラーデータ（フロントエンドにシリアライズ用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerrorDataResponse {
+    pub name: String,
+    pub color: Option<String>,
+    pub abilities: Vec<TerrorAbilityResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerrorAbilityResponse {
+    pub label: String,
+    pub value: String,
+}
+
+impl From<TerrorData> for TerrorDataResponse {
+    fn from(data: TerrorData) -> Self {
+        TerrorDataResponse {
+            name: data.name,
+            color: data.color,
+            abilities: data.abilities.into_iter().map(|a| TerrorAbilityResponse {
+                label: a.label,
+                value: a.value,
+            }).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AppSnapshot {
     settings: AppSettings,
@@ -107,7 +150,23 @@ struct AppState {
     last_copied_code: Option<String>,
 }
 
+/// VRオーバーレイプロセス状態
+struct VrOverlayState {
+    process: Option<Child>,
+    stdin_writer: Option<std::process::ChildStdin>,
+}
+
+impl Default for VrOverlayState {
+    fn default() -> Self {
+        Self {
+            process: None,
+            stdin_writer: None,
+        }
+    }
+}
+
 type SharedState = Arc<Mutex<AppState>>;
+type SharedVrState = Arc<Mutex<VrOverlayState>>;
 
 // ============ ファイルパス取得 ============
 
@@ -206,6 +265,223 @@ fn set_auto_switch_tab(
     };
     persist_settings(&app_handle, &updated_settings)?;
     Ok(updated_settings)
+}
+
+// ============ VR設定コマンド ============
+
+#[tauri::command]
+fn set_vr_overlay_enabled(
+    app_handle: AppHandle,
+    state: tauri::State<SharedState>,
+    vr_state: tauri::State<SharedVrState>,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let (updated_settings, current_round) = {
+        let mut state = state.lock().map_err(|_| "state lock failed")?;
+        state.settings.vr_overlay_enabled = enabled;
+        (state.settings.clone(), state.current_round.clone())
+    };
+    persist_settings(&app_handle, &updated_settings)?;
+    
+    // VRオーバーレイの起動/停止
+    if enabled {
+        start_vr_overlay(&app_handle, vr_state.inner(), &updated_settings)?;
+        // 現在のラウンド情報があれば送信
+        if current_round.is_active && !current_round.killers.is_empty() {
+            let round_type = current_round.round_type.as_deref().unwrap_or("Classic");
+            let terror_infos: Vec<VrTerrorInfo> = current_round.killers.iter()
+                .map(|id| get_terror_data(*id, round_type).into())
+                .collect();
+            send_vr_command(vr_state.inner(), &VrCommand::UpdateTerrors { 
+                terrors: terror_infos,
+                round_type: round_type.to_string(),
+            })?;
+        }
+    } else {
+        stop_vr_overlay(vr_state.inner())?;
+    }
+    
+    Ok(updated_settings)
+}
+
+#[tauri::command]
+fn set_vr_overlay_position(
+    app_handle: AppHandle,
+    state: tauri::State<SharedState>,
+    vr_state: tauri::State<SharedVrState>,
+    position: String,
+) -> Result<AppSettings, String> {
+    let pos = match position.as_str() {
+        "LeftHand" => VrOverlayPosition::LeftHand,
+        "Above" => VrOverlayPosition::Above,
+        _ => VrOverlayPosition::RightHand,
+    };
+    
+    let updated_settings = {
+        let mut state = state.lock().map_err(|_| "state lock failed")?;
+        state.settings.vr_overlay_position = pos.clone();
+        state.settings.clone()
+    };
+    persist_settings(&app_handle, &updated_settings)?;
+    
+    // VRオーバーレイに位置変更を通知
+    if updated_settings.vr_overlay_enabled {
+        send_vr_command(vr_state.inner(), &VrCommand::SetPosition { position: pos })?;
+    }
+    
+    Ok(updated_settings)
+}
+
+// ============ テラーデータコマンド ============
+
+#[tauri::command]
+fn get_terror_info(id: u32, round_type: String) -> TerrorDataResponse {
+    let data = get_terror_data(id, &round_type);
+    data.into()
+}
+
+#[tauri::command]
+fn get_terrors_info(killer_ids: Vec<u32>, round_type: String) -> Vec<TerrorDataResponse> {
+    killer_ids.iter()
+        .map(|id| get_terror_data(*id, &round_type).into())
+        .collect()
+}
+
+// ============ VRオーバーレイ管理 ============
+
+/// VRオーバーレイに送信するテラー情報
+#[derive(Debug, Clone, Serialize)]
+struct VrTerrorInfo {
+    name: String,
+    color: Option<String>,
+    abilities: Vec<VrTerrorAbility>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VrTerrorAbility {
+    label: String,
+    value: String,
+}
+
+impl From<TerrorData> for VrTerrorInfo {
+    fn from(data: TerrorData) -> Self {
+        VrTerrorInfo {
+            name: data.name,
+            color: data.color,
+            abilities: data.abilities.into_iter().map(|a| VrTerrorAbility {
+                label: a.label,
+                value: a.value,
+            }).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+enum VrCommand {
+    #[serde(rename = "update_terrors")]
+    UpdateTerrors { terrors: Vec<VrTerrorInfo>, round_type: String },
+    #[serde(rename = "set_position")]
+    SetPosition { position: VrOverlayPosition },
+    #[serde(rename = "clear")]
+    Clear,
+    #[serde(rename = "quit")]
+    Quit,
+}
+
+fn get_vr_overlay_path(app_handle: &AppHandle) -> Option<PathBuf> {
+    // Sidecarバイナリのパスを取得
+    let resource_dir = app_handle.path().resource_dir().ok()?;
+    let binary_name = if cfg!(target_os = "windows") {
+        "vr-overlay-x86_64-pc-windows-msvc.exe"
+    } else {
+        "vr-overlay"
+    };
+    let binary_path = resource_dir.join("binaries").join(binary_name);
+    
+    if binary_path.exists() {
+        Some(binary_path)
+    } else {
+        println!("[tsst] VR overlay binary not found at: {:?}", binary_path);
+        None
+    }
+}
+
+fn start_vr_overlay(
+    app_handle: &AppHandle,
+    vr_state: &Mutex<VrOverlayState>,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
+    
+    // 既に起動している場合は何もしない
+    if state.process.is_some() {
+        return Ok(());
+    }
+    
+    let binary_path = get_vr_overlay_path(app_handle)
+        .ok_or("VR overlay binary not found")?;
+    
+    let position_arg = match settings.vr_overlay_position {
+        VrOverlayPosition::RightHand => "right",
+        VrOverlayPosition::LeftHand => "left",
+        VrOverlayPosition::Above => "above",
+    };
+    
+    println!("[tsst] Starting VR overlay: {:?} --position {}", binary_path, position_arg);
+    
+    let mut child = Command::new(&binary_path)
+        .arg("--position")
+        .arg(position_arg)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start VR overlay: {}", e))?;
+    
+    let stdin = child.stdin.take();
+    state.process = Some(child);
+    state.stdin_writer = stdin;
+    
+    println!("[tsst] VR overlay started");
+    Ok(())
+}
+
+fn stop_vr_overlay(vr_state: &Mutex<VrOverlayState>) -> Result<(), String> {
+    let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
+    
+    if let Some(ref mut stdin) = state.stdin_writer {
+        let cmd = serde_json::to_string(&VrCommand::Quit).unwrap_or_default();
+        let _ = writeln!(stdin, "{}", cmd);
+        let _ = stdin.flush();
+    }
+    
+    if let Some(mut child) = state.process.take() {
+        // プロセスが終了するのを少し待つ
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    
+    state.stdin_writer = None;
+    println!("[tsst] VR overlay stopped");
+    Ok(())
+}
+
+fn send_vr_command(vr_state: &Mutex<VrOverlayState>, command: &VrCommand) -> Result<(), String> {
+    let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
+    
+    if let Some(ref mut stdin) = state.stdin_writer {
+        let cmd = serde_json::to_string(command)
+            .map_err(|e| format!("Failed to serialize VR command: {}", e))?;
+        writeln!(stdin, "{}", cmd)
+            .map_err(|e| format!("Failed to write VR command: {}", e))?;
+        stdin.flush()
+            .map_err(|e| format!("Failed to flush VR command: {}", e))?;
+        println!("[tsst] Sent VR command: {}", cmd);
+    }
+    
+    Ok(())
 }
 
 // ============ ログファイル処理 ============
@@ -472,7 +748,7 @@ fn maybe_copy_latest_code(line: &str, state: &mut AppState) {
     }
 }
 
-fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
+fn start_log_monitor(app_handle: AppHandle, state: SharedState, vr_state: SharedVrState) {
     std::thread::spawn(move || {
         let patterns = LogPatterns::new();
 
@@ -508,6 +784,7 @@ fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
                                 let mut should_emit_state = false;
                                 let mut should_emit_round_started = false;
                                 let mut should_emit_round_ended = false;
+                                let mut killers_changed = false;
 
                                 for line in buffer.lines() {
                                     let event = process_log_line(line, &patterns, &mut state_guard);
@@ -522,6 +799,10 @@ fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
                                         }
                                         LogEvent::StateChanged => {
                                             should_emit_state = true;
+                                            // 敵がスポーンした場合をチェック
+                                            if !state_guard.current_round.killers.is_empty() {
+                                                killers_changed = true;
+                                            }
                                         }
                                         LogEvent::None => {}
                                     }
@@ -541,6 +822,10 @@ fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
                                         current_round: state_guard.current_round.clone(),
                                     };
                                     let auto_switch = state_guard.settings.auto_switch_tab;
+                                    let vr_enabled = state_guard.settings.vr_overlay_enabled;
+                                    let killers = state_guard.current_round.killers.clone();
+                                    let round_type = state_guard.current_round.round_type.clone()
+                                        .unwrap_or_else(|| "Classic".to_string());
                                     drop(state_guard); // ロックを解放してからファイル書き込み
                                     let _ = persist_data(&app_handle, &data_clone);
                                     let _ = app_handle.emit("state_updated", &snapshot);
@@ -551,6 +836,22 @@ fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
                                     }
                                     if should_emit_round_ended && auto_switch {
                                         let _ = app_handle.emit("round_ended", ());
+                                    }
+                                    
+                                    // VRオーバーレイに敵情報を送信
+                                    if vr_enabled {
+                                        if killers_changed && !killers.is_empty() {
+                                            let terror_infos: Vec<VrTerrorInfo> = killers.iter()
+                                                .map(|id| get_terror_data(*id, &round_type).into())
+                                                .collect();
+                                            let _ = send_vr_command(&vr_state, &VrCommand::UpdateTerrors {
+                                                terrors: terror_infos,
+                                                round_type: round_type.clone(),
+                                            });
+                                        }
+                                        if should_emit_round_ended {
+                                            let _ = send_vr_command(&vr_state, &VrCommand::Clear);
+                                        }
                                     }
                                 }
                             }
@@ -566,11 +867,14 @@ fn start_log_monitor(app_handle: AppHandle, state: SharedState) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shared_state: SharedState = Arc::new(Mutex::new(AppState::default()));
+    let shared_vr_state: SharedVrState = Arc::new(Mutex::new(VrOverlayState::default()));
 
     tauri::Builder::default()
         .manage(shared_state)
+        .manage(shared_vr_state)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -590,6 +894,19 @@ pub fn run() {
             if let Some(data) = load_data(&app_handle) {
                 if let Ok(mut state) = app.state::<SharedState>().lock() {
                     state.data = data;
+                }
+            }
+            
+            // VRオーバーレイが有効な場合は起動
+            {
+                let should_start_vr = {
+                    let state = app.state::<SharedState>();
+                    state.lock().ok().map(|s| (s.settings.vr_overlay_enabled, s.settings.clone()))
+                };
+                
+                if let Some((true, settings)) = should_start_vr {
+                    let vr_state = app.state::<SharedVrState>();
+                    let _ = start_vr_overlay(&app_handle, vr_state.inner(), &settings);
                 }
             }
 
@@ -621,6 +938,9 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        // VRオーバーレイを停止
+                        let vr_state = app.state::<SharedVrState>();
+                        let _ = stop_vr_overlay(vr_state.inner());
                         app.exit(0);
                     }
                     _ => {}
@@ -630,6 +950,7 @@ pub fn run() {
             start_log_monitor(
                 app_handle.clone(),
                 app.state::<SharedState>().inner().clone(),
+                app.state::<SharedVrState>().inner().clone(),
             );
             Ok(())
         })
@@ -642,7 +963,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_log_dir,
-            set_auto_switch_tab
+            set_auto_switch_tab,
+            set_vr_overlay_enabled,
+            set_vr_overlay_position,
+            get_terror_info,
+            get_terrors_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

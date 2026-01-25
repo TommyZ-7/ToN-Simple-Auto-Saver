@@ -1,7 +1,7 @@
 import { SectionHeader, Card } from "../common";
 import { motion, AnimatePresence } from "framer-motion";
-import { getTerrorInfoByRoundType } from "../../data/terrors";
-import { getTerrorAbilities, formatAbilities } from "../../data/terrorInfo";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface CurrentRoundInfo {
   is_active: boolean;
@@ -12,15 +12,23 @@ interface CurrentRoundInfo {
   save_code?: string | null;
 }
 
+interface TerrorAbility {
+  label: string;
+  value: string;
+}
+
+interface TerrorData {
+  name: string;
+  color?: string | null;
+  abilities: TerrorAbility[];
+}
+
 interface RealtimePageProps {
   currentRound: CurrentRoundInfo;
 }
 
-function TerrorCard({ killerId, roundType, index }: { killerId: number; roundType: string; index: number }) {
-  const terrorInfo = getTerrorInfoByRoundType(killerId, roundType);
-  const terrorColor = terrorInfo.color ? `rgb(${terrorInfo.color})` : undefined;
-  const abilities = getTerrorAbilities(terrorInfo.name);
-  const formattedAbilities = abilities ? formatAbilities(abilities) : [];
+function TerrorCard({ terrorData, index }: { terrorData: TerrorData; index: number }) {
+  const terrorColor = terrorData.color ? `rgb(${terrorData.color})` : undefined;
 
   return (
     <motion.div
@@ -35,17 +43,14 @@ function TerrorCard({ killerId, roundType, index }: { killerId: number; roundTyp
         style={{ borderLeftWidth: 3, borderLeftColor: terrorColor || "transparent" }}
       >
         <span className="text-base font-semibold text-white flex-1">
-          {terrorInfo.name}
-        </span>
-        <span className="text-xs text-gray-500 font-mono">
-          #{killerId}
+          {terrorData.name}
         </span>
       </div>
 
       {/* Terror Abilities - Always visible */}
-      {formattedAbilities.length > 0 ? (
+      {terrorData.abilities.length > 0 ? (
         <div className="px-4 py-3 space-y-2">
-          {formattedAbilities.map((ability, idx) => (
+          {terrorData.abilities.map((ability, idx) => (
             <div
               key={idx}
               className="flex items-start gap-3 text-sm"
@@ -70,7 +75,35 @@ function TerrorCard({ killerId, roundType, index }: { killerId: number; roundTyp
 
 export function RealtimePage({ currentRound }: RealtimePageProps) {
   const isActive = currentRound.is_active;
-  const roundType = currentRound.round_type || "";
+  const roundType = currentRound.round_type || "Classic";
+  const [terrorDataList, setTerrorDataList] = useState<TerrorData[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // 敵情報をバックエンドから取得
+  useEffect(() => {
+    async function fetchTerrorData() {
+      if (currentRound.killers.length === 0) {
+        setTerrorDataList([]);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const data = await invoke<TerrorData[]>("get_terrors_info", {
+          killerIds: currentRound.killers,
+          roundType: roundType,
+        });
+        setTerrorDataList(data);
+      } catch (error) {
+        console.error("Failed to fetch terror data:", error);
+        setTerrorDataList([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchTerrorData();
+  }, [currentRound.killers, roundType]);
 
   return (
     <div className="space-y-4">
@@ -122,17 +155,28 @@ export function RealtimePage({ currentRound }: RealtimePageProps) {
             </div>
 
             {/* 敵情報（メインコンテンツ） */}
-            {currentRound.killers.length > 0 ? (
+            {loading ? (
+              <Card hover={false} className="p-6 text-center">
+                <div className="text-gray-500">
+                  敵情報を読み込み中...
+                </div>
+              </Card>
+            ) : terrorDataList.length > 0 ? (
               <div className="space-y-3">
-                {currentRound.killers.map((killerId, index) => (
+                {terrorDataList.map((terrorData, index) => (
                   <TerrorCard
-                    key={`${killerId}-${index}`}
-                    killerId={killerId}
-                    roundType={roundType}
+                    key={`${terrorData.name}-${index}`}
+                    terrorData={terrorData}
                     index={index}
                   />
                 ))}
               </div>
+            ) : currentRound.killers.length > 0 ? (
+              <Card hover={false} className="p-6 text-center">
+                <div className="text-gray-500">
+                  敵情報を取得できませんでした
+                </div>
+              </Card>
             ) : (
               <Card hover={false} className="p-6 text-center">
                 <div className="text-gray-500">

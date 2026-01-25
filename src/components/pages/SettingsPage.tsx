@@ -11,6 +11,8 @@ import {
   Loader2,
   ChevronDown,
   Radio,
+  Glasses,
+  Hand,
 } from "lucide-react";
 import type {
   UpdateStatus,
@@ -20,14 +22,20 @@ import type {
 
 const DEFAULT_LOG_DIR = "%LOCALAPPDATA%Low\\VRChat\\VRChat";
 
+export type VrOverlayPosition = "RightHand" | "LeftHand" | "Above";
+
 interface SettingsPageProps {
   autoStartEnabled: boolean;
   autoSwitchTabEnabled: boolean;
   logDir: string | null | undefined;
+  vrOverlayEnabled: boolean;
+  vrOverlayPosition: VrOverlayPosition;
   onToggleAutoStart: () => void;
   onToggleAutoSwitchTab: () => void;
   onChooseLogDir: () => void;
   onResetLogDir: () => void;
+  onToggleVrOverlay: () => void;
+  onSetVrOverlayPosition: (position: VrOverlayPosition) => void;
   // アップデート関連
   updateStatus: UpdateStatus;
   updateInfo: UpdateInfo | null;
@@ -42,10 +50,14 @@ export function SettingsPage({
   autoStartEnabled,
   autoSwitchTabEnabled,
   logDir,
+  vrOverlayEnabled,
+  vrOverlayPosition,
   onToggleAutoStart,
   onToggleAutoSwitchTab,
   onChooseLogDir,
   onResetLogDir,
+  onToggleVrOverlay,
+  onSetVrOverlayPosition,
   updateStatus,
   updateInfo,
   updateProgress,
@@ -116,6 +128,56 @@ export function SettingsPage({
         </div>
       </Card>
 
+      {/* VRオーバーレイ設定セクション */}
+      <SectionHeader
+        title="VRオーバーレイ"
+        description="SteamVR上に敵情報を表示"
+      />
+
+      <Card hover={false} className="divide-y divide-white/5">
+        <SettingItem
+          icon={<Glasses className="w-5 h-5" />}
+          title="VRに敵情報を表示"
+          description="SteamVR上にテラー情報をオーバーレイ表示"
+        >
+          <Toggle checked={vrOverlayEnabled} onChange={onToggleVrOverlay} />
+        </SettingItem>
+
+        <div className="p-4">
+          <div className="flex items-start gap-4">
+            <div className="text-[#0078d4]">
+              <Hand className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <h4 className="font-medium text-white">
+                オーバーレイの表示位置
+              </h4>
+              <p className="text-sm text-gray-500 mb-3">情報を表示する位置を選択</p>
+              <div className="flex gap-2">
+                <PositionButton
+                  label="右手"
+                  isSelected={vrOverlayPosition === "RightHand"}
+                  onClick={() => onSetVrOverlayPosition("RightHand")}
+                  disabled={!vrOverlayEnabled}
+                />
+                <PositionButton
+                  label="左手"
+                  isSelected={vrOverlayPosition === "LeftHand"}
+                  onClick={() => onSetVrOverlayPosition("LeftHand")}
+                  disabled={!vrOverlayEnabled}
+                />
+                <PositionButton
+                  label="上"
+                  isSelected={vrOverlayPosition === "Above"}
+                  onClick={() => onSetVrOverlayPosition("Above")}
+                  disabled={!vrOverlayEnabled}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+
       {/* アップデートセクション */}
       <SectionHeader
         title="アップデート"
@@ -156,6 +218,29 @@ function SettingItem({ icon, title, description, children }: SettingItemProps) {
       </div>
       {children}
     </div>
+  );
+}
+
+interface PositionButtonProps {
+  label: string;
+  isSelected: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
+function PositionButton({ label, isSelected, onClick, disabled }: PositionButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+        isSelected
+          ? "bg-[#0078d4] text-white"
+          : "bg-white/5 text-gray-300 hover:bg-white/10"
+      } ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+    >
+      {label}
+    </button>
   );
 }
 

@@ -22,6 +22,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Checkout private terror data
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ton-terror-data
+          token: ${{ secrets.TERROR_DATA_PAT }}
+          path: terror-data-private
+
+      - name: Copy terror data
+        run: |
+          Copy-Item -Path "terror-data-private/terror_data.rs" -Destination "src-tauri/src/terror_data.rs" -Force
+        shell: pwsh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -29,6 +41,18 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build VR Overlay sidecar
+        run: |
+          cd src-dotnet/VROverlayApp
+          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          Copy-Item "bin/Release/net8.0/win-x64/publish/VROverlayApp.exe" "../../src-tauri/binaries/vr-overlay-x86_64-pc-windows-msvc.exe" -Force
+        shell: pwsh
 
       - name: Install frontend dependencies
         run: bun install

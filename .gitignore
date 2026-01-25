@@ -26,3 +26,28 @@ dist-ssr
 *.key.pub
 
 ui_sample/
+tauri-steamvr-test-main/
+
+# Private terror data (fetched from private repo during CI build)
+src-tauri/src/terror_data.rs
+
+# .NET build outputs
+src-dotnet/**/bin/
+src-dotnet/**/obj/
+src-dotnet/**/*.log
+
+# Sidecar binaries (built in CI)
+src-tauri/binaries/*.exe
+src-tauri/binaries/*.pdb
+
+# Screenshots and temporary images
+*.png
+*.jpg
+*.jpeg
+*.webp
+!src-tauri/icons/*.png
+!public/**/*.png
+!src/assets/**/*.png
+
+# Temporary/test files
+~$/

@@ -44,6 +44,8 @@ type CurrentRoundInfo = {
 type AppSettings = {
   log_dir?: string | null;
   auto_switch_tab?: boolean;
+  vr_overlay_enabled?: boolean;
+  vr_overlay_position?: "RightHand" | "LeftHand" | "Above";
 };
 
 type AppSnapshot = {
@@ -164,6 +166,21 @@ function App() {
     setSnapshot((prev) => ({ ...prev, settings: data }));
   };
 
+  const toggleVrOverlay = async () => {
+    const newValue = !snapshot.settings.vr_overlay_enabled;
+    const data = (await invoke("set_vr_overlay_enabled", {
+      enabled: newValue,
+    })) as AppSettings;
+    setSnapshot((prev) => ({ ...prev, settings: data }));
+  };
+
+  const setVrOverlayPosition = async (position: "RightHand" | "LeftHand" | "Above") => {
+    const data = (await invoke("set_vr_overlay_position", {
+      position: position,
+    })) as AppSettings;
+    setSnapshot((prev) => ({ ...prev, settings: data }));
+  };
+
   const handleGoToSettings = () => {
     setCurrentPage("settings");
   };
@@ -188,10 +205,14 @@ function App() {
             autoStartEnabled={autoStartEnabled}
             autoSwitchTabEnabled={snapshot.settings.auto_switch_tab ?? false}
             logDir={snapshot.settings.log_dir}
+            vrOverlayEnabled={snapshot.settings.vr_overlay_enabled ?? false}
+            vrOverlayPosition={snapshot.settings.vr_overlay_position ?? "RightHand"}
             onToggleAutoStart={toggleAutoStart}
             onToggleAutoSwitchTab={toggleAutoSwitchTab}
             onChooseLogDir={handleChooseLogDir}
             onResetLogDir={handleResetLogDir}
+            onToggleVrOverlay={toggleVrOverlay}
+            onSetVrOverlayPosition={setVrOverlayPosition}
             updateStatus={updateStatus}
             updateInfo={updateInfo}
             updateProgress={updateProgress}

@@ -1,5 +1,13 @@
 import { motion } from "framer-motion";
-import { Home, History, Settings, Info, ChevronLeft, Menu, Radio } from "lucide-react";
+import {
+  Home,
+  History,
+  Settings,
+  Info,
+  ChevronLeft,
+  Menu,
+  Radio,
+} from "lucide-react";
 import { useState } from "react";
 
 interface SidebarProps {
@@ -60,10 +68,11 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
             <button
               key={item.id}
               onClick={() => onPageChange(item.id)}
-              className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${isActive
-                ? "bg-white/10 text-white"
-                : "text-gray-400 hover:text-white hover:bg-white/5"
-                }`}
+              className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${
+                isActive
+                  ? "bg-white/10 text-white"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
               {!isCollapsed && (
@@ -97,7 +106,7 @@ export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
           animate={{ opacity: 1 }}
           className="p-4 border-t border-white/5"
         >
-          <p className="text-xs text-gray-500 text-center">v0.1.4</p>
+          <p className="text-xs text-gray-500 text-center">v0.1.5</p>
         </motion.div>
       )}
     </motion.aside>
