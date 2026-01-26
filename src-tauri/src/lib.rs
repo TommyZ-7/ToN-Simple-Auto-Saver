@@ -391,6 +391,56 @@ enum VrCommand {
     Quit,
 }
 
+#[cfg(windows)]
+fn assign_process_to_job_object(process_handle: windows_sys::Win32::Foundation::HANDLE) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::*;
+
+    unsafe {
+        // ジョブオブジェクトを作成
+        let job_handle: HANDLE = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+        if job_handle.is_null() || job_handle == INVALID_HANDLE_VALUE {
+            return Err("Failed to create job object".to_string());
+        }
+
+        // ジョブオブジェクトの制限を設定（親プロセスが終了したら子プロセスも終了）
+        let job_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..std::mem::zeroed()
+            },
+            ..std::mem::zeroed()
+        };
+
+        let result = SetInformationJobObject(
+            job_handle,
+            JobObjectExtendedLimitInformation,
+            &job_info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+
+        if result == 0 {
+            CloseHandle(job_handle);
+            return Err("Failed to set job object information".to_string());
+        }
+
+        // プロセスをジョブオブジェクトに割り当て
+        let result = AssignProcessToJobObject(job_handle, process_handle);
+        if result == 0 {
+            CloseHandle(job_handle);
+            return Err("Failed to assign process to job object".to_string());
+        }
+
+        // ジョブハンドルは意図的にクローズしない
+        // （プログラム終了時に自動的にクリーンアップされ、その際にプロセスがkillされる）
+        // CloseHandle(job_handle);
+
+        println!("[tsst] VR overlay process assigned to job object");
+    }
+
+    Ok(())
+}
+
 fn get_vr_overlay_path(app_handle: &AppHandle) -> Option<PathBuf> {
     // ビルド時: アプリと同じディレクトリにvr-overlay.exeとして配置される
     // 開発時: target/debug/vr-overlay.exe または binaries/vr-overlay-xxx.exe
@@ -488,6 +538,19 @@ fn start_vr_overlay(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start VR overlay: {}", e))?;
+    
+    // Windowsの場合、子プロセスをジョブオブジェクトに割り当てる
+    // これにより、親プロセス（Tauriアプリ）がクラッシュやタスクキルされても
+    // 子プロセス（VRオーバーレイ）が自動的に終了する
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let process_handle = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        if let Err(e) = assign_process_to_job_object(process_handle) {
+            println!("[tsst] Warning: Failed to assign to job object: {}", e);
+            // 失敗してもプロセスは起動しているので、継続する
+        }
+    }
     
     let stdin = child.stdin.take();
     if let Some(stdout) = child.stdout.take() {

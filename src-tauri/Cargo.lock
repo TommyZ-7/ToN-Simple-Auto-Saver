@@ -4715,7 +4715,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tsst"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -4730,6 +4730,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
