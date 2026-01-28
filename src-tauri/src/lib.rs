@@ -166,6 +166,8 @@ struct AppState {
 struct VrOverlayState {
     process: Option<Child>,
     stdin_writer: Option<std::process::ChildStdin>,
+    /// SteamVR待機中フラグ（設定は有効だがSteamVRが未起動）
+    waiting_for_steamvr: bool,
 }
 
 impl Default for VrOverlayState {
@@ -173,6 +175,7 @@ impl Default for VrOverlayState {
         Self {
             process: None,
             stdin_writer: None,
+            waiting_for_steamvr: false,
         }
     }
 }
@@ -297,24 +300,37 @@ fn set_vr_overlay_enabled(
 
     // VRオーバーレイの起動/停止
     if enabled {
-        start_vr_overlay(&app_handle, vr_state.inner(), &updated_settings)?;
-        // 現在のラウンド情報があれば送信
-        if current_round.is_active && !current_round.killers.is_empty() {
-            let round_type = current_round.round_type.as_deref().unwrap_or("Classic");
-            let terror_infos: Vec<VrTerrorInfo> = current_round
-                .killers
-                .iter()
-                .map(|id| get_terror_data(*id, round_type).into())
-                .collect();
-            send_vr_command(
-                vr_state.inner(),
-                &VrCommand::UpdateTerrors {
-                    terrors: terror_infos,
-                    round_type: round_type.to_string(),
-                },
-            )?;
+        // SteamVRが起動しているかチェック
+        if is_steamvr_running() {
+            start_vr_overlay(&app_handle, vr_state.inner(), &updated_settings)?;
+            // 現在のラウンド情報があれば送信
+            if current_round.is_active && !current_round.killers.is_empty() {
+                let round_type = current_round.round_type.as_deref().unwrap_or("Classic");
+                let terror_infos: Vec<VrTerrorInfo> = current_round
+                    .killers
+                    .iter()
+                    .map(|id| get_terror_data(*id, round_type).into())
+                    .collect();
+                send_vr_command(
+                    vr_state.inner(),
+                    &VrCommand::UpdateTerrors {
+                        terrors: terror_infos,
+                        round_type: round_type.to_string(),
+                    },
+                )?;
+            }
+        } else {
+            // SteamVRが起動していない場合は待機状態にする
+            let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
+            state.waiting_for_steamvr = true;
+            println!("[tsst] SteamVR not running, waiting for SteamVR to start...");
         }
     } else {
+        // 待機状態もクリア
+        {
+            let mut state = vr_state.lock().map_err(|_| "vr state lock failed")?;
+            state.waiting_for_steamvr = false;
+        }
         stop_vr_overlay(vr_state.inner())?;
     }
 
@@ -412,6 +428,82 @@ enum VrCommand {
     Clear,
     #[serde(rename = "quit")]
     Quit,
+}
+
+/// SteamVRが起動しているかどうかを確認する（vrserver.exeプロセスの存在チェック）
+#[cfg(windows)]
+fn is_steamvr_running() -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return false;
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+    let target_exe: Vec<u16> = OsStr::new("vrserver.exe")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut found = false;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                // szExeFileをnull終端の文字列として比較
+                let exe_name_len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let exe_name = &entry.szExeFile[..exe_name_len];
+
+                // 大文字小文字を無視して比較
+                let target_len = target_exe.len() - 1; // null終端を除く
+                if exe_name.len() == target_len {
+                    let matches = exe_name.iter().zip(target_exe.iter()).all(|(&a, &b)| {
+                        // ASCII大文字を小文字に変換して比較
+                        let a_lower = if a >= 'A' as u16 && a <= 'Z' as u16 {
+                            a + 32
+                        } else {
+                            a
+                        };
+                        let b_lower = if b >= 'A' as u16 && b <= 'Z' as u16 {
+                            b + 32
+                        } else {
+                            b
+                        };
+                        a_lower == b_lower
+                    });
+                    if matches {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+
+    found
+}
+
+#[cfg(not(windows))]
+fn is_steamvr_running() -> bool {
+    // 非Windows環境では常にtrueを返す（未実装）
+    true
 }
 
 #[cfg(windows)]
@@ -712,6 +804,7 @@ struct LogPatterns {
     survival_re: Regex,
     respawn_re: Regex,
     round_end_re: Regex,
+    left_room_re: Regex,
 }
 
 impl LogPatterns {
@@ -732,6 +825,8 @@ impl LogPatterns {
             survival_re: Regex::new(r"Lived in round\.").expect("survival regex"),
             respawn_re: Regex::new(r"Respawned\? Coward\.").expect("respawn regex"),
             round_end_re: Regex::new(r"Verified Round End").expect("round end regex"),
+            // ワールド移動検出（OnLeftRoom または Joining wrld_）
+            left_room_re: Regex::new(r"OnLeftRoom|Joining wrld_").expect("left room regex"),
         }
     }
 }
@@ -845,6 +940,17 @@ fn process_log_line(line: &str, patterns: &LogPatterns, state: &mut AppState) ->
         state.current_round = CurrentRoundInfo::default();
         state.current_round_type = None;
         event = LogEvent::RoundEnded;
+    }
+
+    // ワールド移動を検出（ラウンドを無効化）
+    if patterns.left_room_re.is_match(line) {
+        if state.current_round.is_active {
+            println!("[tsst] ワールド移動検出（ラウンド無効化）");
+            // ラウンドをリセット（統計に含めない）
+            state.current_round = CurrentRoundInfo::default();
+            state.current_round_type = None;
+            event = LogEvent::RoundEnded;
+        }
     }
 
     // ラウンド終了を検出
@@ -968,6 +1074,85 @@ fn maybe_copy_latest_code(line: &str, state: &mut AppState) {
             state.last_copied_code = Some(code);
         }
     }
+}
+
+/// SteamVRの状態を監視し、起動/終了に応じてVRオーバーレイを起動/停止する
+fn start_steamvr_monitor(app_handle: AppHandle, state: SharedState, vr_state: SharedVrState) {
+    std::thread::spawn(move || {
+        let mut was_running = is_steamvr_running();
+
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+
+            let is_running = is_steamvr_running();
+            let (vr_enabled, settings) = {
+                let state = state.lock().expect("state lock");
+                (state.settings.vr_overlay_enabled, state.settings.clone())
+            };
+
+            // VRオーバーレイが有効な場合のみ処理
+            if !vr_enabled {
+                was_running = is_running;
+                continue;
+            }
+
+            let (has_process, is_waiting) = {
+                let vr_state = vr_state.lock().expect("vr state lock");
+                (vr_state.process.is_some(), vr_state.waiting_for_steamvr)
+            };
+
+            // SteamVRが起動した場合
+            if is_running && !was_running {
+                println!("[tsst] SteamVR started");
+                if is_waiting {
+                    // 待機状態からVRオーバーレイを起動
+                    {
+                        let mut vr_state = vr_state.lock().expect("vr state lock");
+                        vr_state.waiting_for_steamvr = false;
+                    }
+                    if let Err(e) = start_vr_overlay(&app_handle, &vr_state, &settings) {
+                        println!("[tsst] Failed to start VR overlay: {}", e);
+                    } else {
+                        // 現在のラウンド情報があれば送信
+                        let current_round = {
+                            let state = state.lock().expect("state lock");
+                            state.current_round.clone()
+                        };
+                        if current_round.is_active && !current_round.killers.is_empty() {
+                            let round_type =
+                                current_round.round_type.as_deref().unwrap_or("Classic");
+                            let terror_infos: Vec<VrTerrorInfo> = current_round
+                                .killers
+                                .iter()
+                                .map(|id| get_terror_data(*id, round_type).into())
+                                .collect();
+                            let _ = send_vr_command(
+                                &vr_state,
+                                &VrCommand::UpdateTerrors {
+                                    terrors: terror_infos,
+                                    round_type: round_type.to_string(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
+            // SteamVRが終了した場合
+            if !is_running && was_running {
+                println!("[tsst] SteamVR stopped");
+                if has_process {
+                    // VRオーバーレイを停止して待機状態にする
+                    let _ = stop_vr_overlay(&vr_state);
+                    let mut vr_state = vr_state.lock().expect("vr state lock");
+                    vr_state.waiting_for_steamvr = true;
+                    println!("[tsst] VR overlay stopped, waiting for SteamVR to start...");
+                }
+            }
+
+            was_running = is_running;
+        }
+    });
 }
 
 fn start_log_monitor(app_handle: AppHandle, state: SharedState, vr_state: SharedVrState) {
@@ -1126,7 +1311,7 @@ pub fn run() {
                 }
             }
 
-            // VRオーバーレイが有効な場合は起動
+            // VRオーバーレイが有効な場合は起動（SteamVRが起動している場合のみ）
             {
                 let should_start_vr = {
                     let state = app.state::<SharedState>();
@@ -1138,7 +1323,15 @@ pub fn run() {
 
                 if let Some((true, settings)) = should_start_vr {
                     let vr_state = app.state::<SharedVrState>();
-                    let _ = start_vr_overlay(&app_handle, vr_state.inner(), &settings);
+                    if is_steamvr_running() {
+                        let _ = start_vr_overlay(&app_handle, vr_state.inner(), &settings);
+                    } else {
+                        // SteamVRが起動していない場合は待機状態にする
+                        if let Ok(mut state) = vr_state.lock() {
+                            state.waiting_for_steamvr = true;
+                            println!("[tsst] SteamVR not running at startup, waiting for SteamVR to start...");
+                        }
+                    }
                 }
             }
 
@@ -1184,6 +1377,14 @@ pub fn run() {
                 app.state::<SharedState>().inner().clone(),
                 app.state::<SharedVrState>().inner().clone(),
             );
+
+            // SteamVR監視スレッドを開始
+            start_steamvr_monitor(
+                app_handle.clone(),
+                app.state::<SharedState>().inner().clone(),
+                app.state::<SharedVrState>().inner().clone(),
+            );
+
             Ok(())
         })
         .on_window_event(|window, event| {
