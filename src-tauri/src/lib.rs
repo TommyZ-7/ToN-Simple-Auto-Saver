@@ -18,7 +18,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
-use terror_data::{get_terror_data, round_type_to_english, TerrorData};
+use terror_data::{get_moon_terror_index, get_terror_data, round_type_to_english, TerrorData};
 
 const WORLD_ID: &str = "wrld_a61cdabe-1218-4287-9ffc-2a4d1414e5bd";
 const MAX_HISTORY: usize = 10;
@@ -796,8 +796,21 @@ fn process_log_line(line: &str, patterns: &LogPatterns, state: &mut AppState) ->
             }
         }
 
-        // 0以外の敵コードをリストに追加
-        let killers: Vec<u32> = [k1, k2, k3].into_iter().filter(|&k| k != 0).collect();
+        // Moon系ラウンドの場合、ラウンドタイプから固定のキラーIDを決定
+        // (ログでは "0 0 0" と記録されるため)
+        let round_type = state.current_round.round_type.as_deref();
+        let killers: Vec<u32> = if let Some(rt) = round_type {
+            if let Some(moon_id) = get_moon_terror_index(rt) {
+                // Moon系ラウンドは固定の1体のみ
+                vec![moon_id]
+            } else {
+                // 通常ラウンド: 0以外の敵コードをリストに追加
+                [k1, k2, k3].into_iter().filter(|&k| k != 0).collect()
+            }
+        } else {
+            // ラウンドタイプ不明の場合は通常処理
+            [k1, k2, k3].into_iter().filter(|&k| k != 0).collect()
+        };
         state.current_round.killers = killers.clone();
 
         println!("[tsst] 敵スポーン: {:?}", killers);
