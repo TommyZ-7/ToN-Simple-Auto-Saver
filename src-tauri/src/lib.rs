@@ -934,11 +934,14 @@ fn process_log_line(line: &str, patterns: &LogPatterns, state: &mut AppState) ->
 
     // リスポーンを検出（ラウンドを無効化）
     if patterns.respawn_re.is_match(line) {
-        println!("[tsst] リスポーン検出（ラウンド無効化）");
-        // ラウンドをリセット（統計に含めない）
-        state.current_round = CurrentRoundInfo::default();
-        state.current_round_type = None;
-        event = LogEvent::RoundEnded;
+        if state.current_round.is_active {
+            println!("[tsst] リスポーン検出（ラウンド無効化）");
+            // ラウンドをリセット（統計に含めない）
+            state.current_round = CurrentRoundInfo::default();
+            state.current_round_type = None;
+            // リセット後は他のパターンをチェックしない
+            return LogEvent::RoundEnded;
+        }
     }
 
     // ワールド移動を検出（ラウンドを無効化）
@@ -948,12 +951,13 @@ fn process_log_line(line: &str, patterns: &LogPatterns, state: &mut AppState) ->
             // ラウンドをリセット（統計に含めない）
             state.current_round = CurrentRoundInfo::default();
             state.current_round_type = None;
-            event = LogEvent::RoundEnded;
+            // リセット後は他のパターンをチェックしない
+            return LogEvent::RoundEnded;
         }
     }
 
-    // ラウンド終了を検出
-    if patterns.round_end_re.is_match(line) {
+    // ラウンド終了を検出（ラウンドがアクティブな場合のみ）
+    if patterns.round_end_re.is_match(line) && state.current_round.is_active {
         let round_type = state
             .current_round_type
             .take()
